@@ -1,8 +1,6 @@
 ARG MYSQL_VERSION=8.0.45
 FROM mysql:${MYSQL_VERSION}
 
-ARG OSSUTIL_VERSION=1.7.19
-
 RUN set -eux; \
     if command -v microdnf >/dev/null 2>&1; then \
       microdnf install -y ca-certificates curl gzip tzdata unzip && microdnf clean all; \
@@ -17,15 +15,14 @@ RUN set -eux; \
       exit 1; \
     fi; \
     case "$(uname -m)" in \
-      x86_64) oss_arch="amd64" ;; \
-      aarch64|arm64) oss_arch="arm64" ;; \
+      x86_64) aws_arch="x86_64" ;; \
+      aarch64|arm64) aws_arch="aarch64" ;; \
       *) echo "Unsupported architecture: $(uname -m)" >&2; exit 1 ;; \
     esac; \
-    curl -fsSL "https://gosspublic.alicdn.com/ossutil/${OSSUTIL_VERSION}/ossutil-v${OSSUTIL_VERSION}-linux-${oss_arch}.zip" -o /tmp/ossutil.zip; \
-    mkdir -p /tmp/ossutil; \
-    unzip /tmp/ossutil.zip -d /tmp/ossutil; \
-    find /tmp/ossutil -type f -name ossutil -exec install -m 0755 {} /usr/local/bin/ossutil \;; \
-    rm -rf /tmp/ossutil /tmp/ossutil.zip
+    curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-${aws_arch}.zip" -o /tmp/awscliv2.zip; \
+    unzip /tmp/awscliv2.zip -d /tmp; \
+    /tmp/aws/install --bin-dir /usr/local/bin --install-dir /usr/local/aws-cli; \
+    rm -rf /tmp/aws /tmp/awscliv2.zip
 
 COPY scripts/entrypoint.sh /usr/local/bin/entrypoint.sh
 COPY scripts/backup.sh /usr/local/bin/backup.sh

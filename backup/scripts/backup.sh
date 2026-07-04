@@ -5,7 +5,9 @@ timestamp="$(date +%Y%m%d_%H%M%S)"
 backup_dir="${BACKUP_DIR:-/backups}"
 backup_prefix="${BACKUP_PREFIX:-mysql-replica}"
 retention_count="${BACKUP_RETENTION_COUNT:-7}"
-oss_prefix="${OSS_PREFIX:-mysql-backups}"
+s3_prefix="${S3_PREFIX:-mysql-backups}"
+s3_region="${S3_REGION:-us-east-1}"
+s3_addressing_style="${S3_ADDRESSING_STYLE:-auto}"
 
 mkdir -p "${backup_dir}"
 
@@ -14,10 +16,9 @@ required_vars=(
   MYSQL_PORT
   MYSQL_USER
   MYSQL_PASSWORD
-  OSS_ENDPOINT
-  OSS_BUCKET
-  OSS_ACCESS_KEY_ID
-  OSS_ACCESS_KEY_SECRET
+  S3_BUCKET
+  S3_ACCESS_KEY_ID
+  S3_SECRET_ACCESS_KEY
 )
 
 for var in "${required_vars[@]}"; do
@@ -31,6 +32,54 @@ if ! [[ "${retention_count}" =~ ^[0-9]+$ ]] || [[ "${retention_count}" -lt 1 ]];
   echo "BACKUP_RETENTION_COUNT must be a positive integer, got: ${retention_count}" >&2
   exit 1
 fi
+
+if [[ "${s3_prefix}" == s3://* ]]; then
+  echo "S3_PREFIX must be a key prefix only, not a full s3:// URI: ${s3_prefix}" >&2
+  exit 1
+fi
+
+s3_prefix="${s3_prefix#/}"
+s3_prefix="${s3_prefix%/}"
+
+if [[ -n "${s3_prefix}" ]]; then
+  s3_prefix_uri="s3://${S3_BUCKET}/${s3_prefix}/"
+else
+  s3_prefix_uri="s3://${S3_BUCKET}/"
+fi
+
+aws_global_args=()
+if [[ -n "${S3_ENDPOINT_URL:-}" ]]; then
+  aws_global_args+=(--endpoint-url "${S3_ENDPOINT_URL}")
+fi
+
+if [[ -n "${AWSCLI_GLOBAL_OPTIONS:-}" ]]; then
+  # shellcheck disable=SC2206
+  extra_aws_global_args=(${AWSCLI_GLOBAL_OPTIONS})
+  aws_global_args+=("${extra_aws_global_args[@]}")
+fi
+
+aws_s3_args=()
+if [[ -n "${AWSCLI_S3_OPTIONS:-}" ]]; then
+  # shellcheck disable=SC2206
+  extra_aws_s3_args=(${AWSCLI_S3_OPTIONS})
+  aws_s3_args+=("${extra_aws_s3_args[@]}")
+fi
+
+aws_s3() {
+  aws "${aws_global_args[@]}" s3 "$@" "${aws_s3_args[@]}"
+}
+
+export AWS_ACCESS_KEY_ID="${S3_ACCESS_KEY_ID}"
+export AWS_SECRET_ACCESS_KEY="${S3_SECRET_ACCESS_KEY}"
+export AWS_DEFAULT_REGION="${s3_region}"
+export AWS_EC2_METADATA_DISABLED=true
+
+if [[ -n "${S3_SESSION_TOKEN:-}" ]]; then
+  export AWS_SESSION_TOKEN="${S3_SESSION_TOKEN}"
+fi
+
+aws configure set default.region "${s3_region}" >/dev/null
+aws configure set default.s3.addressing_style "${s3_addressing_style}" >/dev/null
 
 mysql_args=(
   -h"${MYSQL_HOST}"
@@ -96,18 +145,10 @@ echo "Creating backup ${dump_path}"
 mysqldump "${dump_args[@]}" "${database_args[@]}" | gzip -9 > "${tmp_path}"
 mv "${tmp_path}" "${dump_path}"
 
-ossutil config \
-  -e "${OSS_ENDPOINT}" \
-  -i "${OSS_ACCESS_KEY_ID}" \
-  -k "${OSS_ACCESS_KEY_SECRET}" \
-  -L CH \
-  >/dev/null
+s3_uri="${s3_prefix_uri}$(basename "${dump_path}")"
 
-oss_uri="oss://${OSS_BUCKET}/${oss_prefix%/}/$(basename "${dump_path}")"
-
-echo "Uploading to ${oss_uri}"
-# shellcheck disable=SC2086
-ossutil cp "${dump_path}" "${oss_uri}" ${OSSUTIL_OPTIONS:-}
+echo "Uploading to ${s3_uri}"
+aws_s3 cp "${dump_path}" "${s3_uri}"
 
 echo "Pruning local backups, keeping ${retention_count}"
 find "${backup_dir}" -maxdepth 1 -type f -name "${backup_prefix}_*.sql.gz" \
@@ -115,13 +156,13 @@ find "${backup_dir}" -maxdepth 1 -type f -name "${backup_prefix}_*.sql.gz" \
   | tail -n +"$((retention_count + 1))" \
   | xargs -r rm -f
 
-echo "Pruning OSS backups under oss://${OSS_BUCKET}/${oss_prefix%/}, keeping ${retention_count}"
-ossutil ls "oss://${OSS_BUCKET}/${oss_prefix%/}/" \
-  | awk '/\.sql\.gz$/ {print $NF}' \
+echo "Pruning S3 backups under ${s3_prefix_uri}, keeping ${retention_count}"
+aws_s3 ls "${s3_prefix_uri}" \
+  | awk '/\.sql\.gz$/ {print $4}' \
   | sort -r \
   | tail -n +"$((retention_count + 1))" \
   | while read -r old_backup; do
-      [[ -n "${old_backup}" ]] && ossutil rm "${old_backup}" ${OSSUTIL_OPTIONS:-}
+      [[ -n "${old_backup}" ]] && aws_s3 rm "${s3_prefix_uri}${old_backup}"
     done
 
-echo "Backup uploaded: ${oss_uri}"
+echo "Backup uploaded: ${s3_uri}"

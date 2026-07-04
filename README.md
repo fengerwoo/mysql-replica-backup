@@ -1,12 +1,12 @@
-# MySQL Replica Backup to OSS
+# MySQL Replica Backup to S3-Compatible Object Storage
 
 <p align="center">
   <b><a href="#中文">[ 中文</a></b> | <b><a href="#english">English ]</a></b>
 </p>
 
-> 用 Docker 跑一个 MySQL 从库，再从这个从库定时导出 `.sql.gz` 并上传到阿里云 OSS。备份压力不直接打到主库。
+> 用 Docker 跑一个 MySQL 从库，再从这个从库定时导出 `.sql.gz` 并上传到 S3 或 S3 兼容对象存储（如 OSS、COS、MinIO 等）。备份压力不直接打到主库。
 
-> Run a MySQL replica with Docker, periodically dump `.sql.gz` from that replica, and upload backups to Alibaba Cloud OSS. Backup load stays away from the primary database.
+> Run a MySQL replica with Docker, periodically dump `.sql.gz` from that replica, and upload backups to S3 or S3-compatible object storage such as OSS, COS, or MinIO. Backup load stays away from the primary database.
 
 ---
 
@@ -17,7 +17,7 @@
 适合这种场景：
 
 - 你有一个线上 MySQL 主库；
-- 你想定时备份 SQL 到 OSS；
+- 你想定时备份 SQL 到 S3 或 S3 兼容对象存储（如 OSS、COS、MinIO 等）；
 - 你不想让 `mysqldump` 直接压主库；
 - 你希望 Docker 一键跑起来；
 - 主库已有历史数据时，也能先导入全量，再追增量。
@@ -25,7 +25,7 @@
 本项目有两个容器：
 
 - `mysql-replica`：MySQL 从库；
-- `mysql-backup`：备份容器，从从库导出 `.sql.gz`，上传 OSS，并清理旧备份。
+- `mysql-backup`：备份容器，从从库导出 `.sql.gz`，上传 S3，并清理旧备份。
 
 ### 快速开始
 
@@ -183,11 +183,13 @@ BACKUP_ALL_DATABASES=1
 BACKUP_INTERVAL_SECONDS=86400
 BACKUP_RETENTION_COUNT=7
 
-OSS_ENDPOINT=oss-cn-hangzhou.aliyuncs.com
-OSS_BUCKET=your-bucket-name
-OSS_ACCESS_KEY_ID=your-access-key-id
-OSS_ACCESS_KEY_SECRET=your-access-key-secret
-OSS_PREFIX=mysql-backups/prod
+S3_ENDPOINT_URL=https://oss-cn-hangzhou.aliyuncs.com
+S3_REGION=us-east-1
+S3_BUCKET=your-bucket-name
+S3_ACCESS_KEY_ID=your-access-key-id
+S3_SECRET_ACCESS_KEY=your-access-key-secret
+S3_PREFIX=mysql-backups/prod
+S3_ADDRESSING_STYLE=auto
 ```
 
 #### 7. 选择启动方式
@@ -405,12 +407,44 @@ docker compose down
 | `REPLICA_SERVER_ID` | 从库 server-id，不能与主库或其他从库重复 |
 | `REPLICA_ROOT_PASSWORD` | 从库 root 密码 |
 | `BACKUP_INTERVAL_SECONDS` | 备份间隔，单位秒 |
-| `BACKUP_RETENTION_COUNT` | 本地和 OSS 保留最近 N 份 |
+| `BACKUP_RETENTION_COUNT` | 本地和 S3 保留最近 N 份 |
 | `BACKUP_ALL_DATABASES` | `1` 备份所有非系统库；`0` 按 `BACKUP_DATABASES` 指定 |
 | `BACKUP_DATABASES` | 仅当 `BACKUP_ALL_DATABASES=0` 时生效，多个库名用空格分隔 |
-| `OSS_ENDPOINT` / `OSS_BUCKET` | OSS Endpoint 和 Bucket |
-| `OSS_ACCESS_KEY_ID` / `OSS_ACCESS_KEY_SECRET` | OSS 凭证 |
-| `OSS_PREFIX` | OSS 备份路径前缀 |
+| `S3_ENDPOINT_URL` / `S3_BUCKET` | S3 Endpoint URL 和 Bucket；AWS S3 可留空 `S3_ENDPOINT_URL` |
+| `S3_ACCESS_KEY_ID` / `S3_SECRET_ACCESS_KEY` | S3 凭证 |
+| `S3_REGION` | S3 区域；S3 兼容服务（如 OSS、COS、MinIO 等）不严格校验时可用 `us-east-1` |
+| `S3_PREFIX` | S3 备份路径前缀 |
+| `S3_ADDRESSING_STYLE` | Bucket 地址风格，默认 `auto`；MinIO 常用 `path` |
+
+### 从旧 OSS 配置迁移到 S3 配置
+
+如果你原来使用阿里云 OSS，`.env` 可以按下面迁移：
+
+| 旧配置 | 新配置 |
+|---|---|
+| `OSS_ENDPOINT=oss-cn-hangzhou.aliyuncs.com` | `S3_ENDPOINT_URL=https://oss-cn-hangzhou.aliyuncs.com` |
+| `OSS_BUCKET=your-bucket-name` | `S3_BUCKET=your-bucket-name` |
+| `OSS_ACCESS_KEY_ID=your-access-key-id` | `S3_ACCESS_KEY_ID=your-access-key-id` |
+| `OSS_ACCESS_KEY_SECRET=your-access-key-secret` | `S3_SECRET_ACCESS_KEY=your-access-key-secret` |
+| `OSS_PREFIX=mysql-backups/prod` | `S3_PREFIX=mysql-backups/prod` |
+
+阿里云 OSS 通过 S3 兼容接口接入时，`S3_REGION` 通常可以先填 `us-east-1`；如果你的环境强制校验 region，再按实际地域调整。`S3_PREFIX` 只写对象路径前缀，不要写成 `s3://bucket/...`。
+
+### 已有部署更新后怎么生效
+
+拉取新代码后，先按上面的映射修改 `.env`，再重建并重启备份容器：
+
+```bash
+git pull
+docker compose up -d --build --force-recreate mysql-backup
+docker compose logs -f mysql-backup
+```
+
+这只会更新 `mysql-backup`，不会清空或重建 `mysql_replica_data`。如果想立刻验证一次上传，不等下一个定时周期，可以执行：
+
+```bash
+docker compose exec mysql-backup backup.sh
+```
 
 ### 注意事项
 
@@ -418,7 +452,7 @@ docker compose down
 - 从库默认 `read-only` 和 `super-read-only`，避免误写；
 - 从库默认不启用自身 binlog，只作为备份从库；
 - 如果要级联复制，需要额外开启从库 binlog / log-replica-updates；
-- 生产环境建议使用最小权限 OSS AccessKey；
+- 生产环境建议使用最小权限 S3 Access Key；
 - 从库 volume 初始化后，`REPLICA_START_ON_INIT` 不会再影响已有数据目录。
 
 ---
@@ -430,7 +464,7 @@ docker compose down
 Use this project when:
 
 - you have a production MySQL primary;
-- you want scheduled SQL backups to OSS;
+- you want scheduled SQL backups to S3 or S3-compatible object storage such as OSS, COS, or MinIO;
 - you do not want `mysqldump` to run directly on the primary;
 - you want a Docker-based deployment;
 - the primary may already have historical data, so the replica needs an initial full import before replication starts.
@@ -438,7 +472,7 @@ Use this project when:
 This project runs two containers:
 
 - `mysql-replica`: a MySQL replica;
-- `mysql-backup`: a backup worker that dumps from the replica, uploads `.sql.gz` to OSS, and prunes old backups.
+- `mysql-backup`: a backup worker that dumps from the replica, uploads `.sql.gz` to S3, and prunes old backups.
 
 ### Follow These Steps
 
@@ -571,11 +605,13 @@ BACKUP_ALL_DATABASES=1
 BACKUP_INTERVAL_SECONDS=86400
 BACKUP_RETENTION_COUNT=7
 
-OSS_ENDPOINT=oss-cn-hangzhou.aliyuncs.com
-OSS_BUCKET=your-bucket-name
-OSS_ACCESS_KEY_ID=your-access-key-id
-OSS_ACCESS_KEY_SECRET=your-access-key-secret
-OSS_PREFIX=mysql-backups/prod
+S3_ENDPOINT_URL=https://oss-cn-hangzhou.aliyuncs.com
+S3_REGION=us-east-1
+S3_BUCKET=your-bucket-name
+S3_ACCESS_KEY_ID=your-access-key-id
+S3_SECRET_ACCESS_KEY=your-access-key-secret
+S3_PREFIX=mysql-backups/prod
+S3_ADDRESSING_STYLE=auto
 ```
 
 #### 7. Choose A Start Mode
@@ -754,4 +790,34 @@ docker compose down
 
 ### Configuration
 
-See [.env.example](.env.example) for all settings. It now keeps conditional options such as `BACKUP_DATABASES`, binlog file/position, and ossutil extra options commented out until they are needed.
+See [.env.example](.env.example) for all settings. It keeps conditional options such as `BACKUP_DATABASES`, binlog file/position, and AWS CLI extra options commented out until they are needed.
+
+### Migrating From Old OSS Variables
+
+If you previously used Alibaba Cloud OSS, migrate `.env` like this:
+
+| Old setting | New setting |
+|---|---|
+| `OSS_ENDPOINT=oss-cn-hangzhou.aliyuncs.com` | `S3_ENDPOINT_URL=https://oss-cn-hangzhou.aliyuncs.com` |
+| `OSS_BUCKET=your-bucket-name` | `S3_BUCKET=your-bucket-name` |
+| `OSS_ACCESS_KEY_ID=your-access-key-id` | `S3_ACCESS_KEY_ID=your-access-key-id` |
+| `OSS_ACCESS_KEY_SECRET=your-access-key-secret` | `S3_SECRET_ACCESS_KEY=your-access-key-secret` |
+| `OSS_PREFIX=mysql-backups/prod` | `S3_PREFIX=mysql-backups/prod` |
+
+When using Alibaba Cloud OSS through its S3-compatible API, start with `S3_REGION=us-east-1` unless your environment requires the real region. `S3_PREFIX` is only an object key prefix; do not include `s3://bucket/...`.
+
+### Applying Changes To An Existing Deployment
+
+After pulling the new code, update `.env` with the mapping above, then rebuild and restart only the backup worker:
+
+```bash
+git pull
+docker compose up -d --build --force-recreate mysql-backup
+docker compose logs -f mysql-backup
+```
+
+This updates `mysql-backup` only and does not clear or recreate `mysql_replica_data`. To verify one upload immediately instead of waiting for the next scheduled cycle:
+
+```bash
+docker compose exec mysql-backup backup.sh
+```
