@@ -163,7 +163,7 @@ MASTER_PASSWORD=change_me_repl_password
 
 #### 6. 填写 `.env`
 
-最少需要改这些：
+最少需要改这些。完整配置看 [.env.example](.env.example)，每个字段都有中文在前、英文在后的注释；默认不使用的字段保持注释即可。
 
 ```env
 MYSQL_VERSION=8.0.45
@@ -177,6 +177,9 @@ REPLICA_SERVER_ID=2001
 REPLICA_ROOT_PASSWORD=change_me_replica_root_password
 REPLICA_PORT=3307
 
+BACKUP_ALL_DATABASES=1
+# 如果只备份指定库，改为 BACKUP_ALL_DATABASES=0，并取消下一行注释：
+# BACKUP_DATABASES=app_db app_db2
 BACKUP_INTERVAL_SECONDS=86400
 BACKUP_RETENTION_COUNT=7
 
@@ -390,6 +393,8 @@ docker compose down
 
 ### 配置说明
 
+更完整的配置说明以 [.env.example](.env.example) 为准；默认不使用或只在特定模式下生效的字段已经注释掉。
+
 | 配置 | 说明 |
 |---|---|
 | `MYSQL_VERSION` | MySQL 镜像版本，建议与主库 `SELECT VERSION()` 一致 |
@@ -402,6 +407,7 @@ docker compose down
 | `BACKUP_INTERVAL_SECONDS` | 备份间隔，单位秒 |
 | `BACKUP_RETENTION_COUNT` | 本地和 OSS 保留最近 N 份 |
 | `BACKUP_ALL_DATABASES` | `1` 备份所有非系统库；`0` 按 `BACKUP_DATABASES` 指定 |
+| `BACKUP_DATABASES` | 仅当 `BACKUP_ALL_DATABASES=0` 时生效，多个库名用空格分隔 |
 | `OSS_ENDPOINT` / `OSS_BUCKET` | OSS Endpoint 和 Bucket |
 | `OSS_ACCESS_KEY_ID` / `OSS_ACCESS_KEY_SECRET` | OSS 凭证 |
 | `OSS_PREFIX` | OSS 备份路径前缀 |
@@ -545,7 +551,7 @@ MASTER_PASSWORD=change_me_repl_password
 
 #### 6. Fill `.env`
 
-At minimum, set:
+At minimum, set the following values. For the full list, see [.env.example](.env.example); each field is documented with Chinese first and English second, and unused/default-only fields stay commented out.
 
 ```env
 MYSQL_VERSION=8.0.45
@@ -559,6 +565,9 @@ REPLICA_SERVER_ID=2001
 REPLICA_ROOT_PASSWORD=change_me_replica_root_password
 REPLICA_PORT=3307
 
+BACKUP_ALL_DATABASES=1
+# To back up only selected databases, set BACKUP_ALL_DATABASES=0 and uncomment the next line:
+# BACKUP_DATABASES=app_db app_db2
 BACKUP_INTERVAL_SECONDS=86400
 BACKUP_RETENTION_COUNT=7
 
@@ -745,4 +754,4 @@ docker compose down
 
 ### Configuration
 
-See [.env.example](.env.example) for all settings.
+See [.env.example](.env.example) for all settings. It now keeps conditional options such as `BACKUP_DATABASES`, binlog file/position, and ossutil extra options commented out until they are needed.
