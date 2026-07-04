@@ -1,0 +1,79 @@
+services:
+  mysql-replica:
+    image: mysql:${MYSQL_VERSION:-8.0.45}
+    container_name: ${COMPOSE_PROJECT_NAME:-mysql-replica-backup}-mysql-replica
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${REPLICA_ROOT_PASSWORD}
+      TZ: ${TZ:-Asia/Shanghai}
+      MASTER_HOST: ${MASTER_HOST}
+      MASTER_PORT: ${MASTER_PORT:-3306}
+      MASTER_USER: ${MASTER_USER}
+      MASTER_PASSWORD: ${MASTER_PASSWORD}
+      REPLICA_START_ON_INIT: ${REPLICA_START_ON_INIT:-1}
+      MASTER_AUTO_POSITION: ${MASTER_AUTO_POSITION:-1}
+      MASTER_LOG_FILE: ${MASTER_LOG_FILE:-}
+      MASTER_LOG_POS: ${MASTER_LOG_POS:-4}
+      REPLICA_SERVER_ID: ${REPLICA_SERVER_ID:-2001}
+      REPLICA_CHANNEL: ${REPLICA_CHANNEL:-}
+      REPLICATION_CONNECT_RETRY: ${REPLICATION_CONNECT_RETRY:-10}
+      REPLICATION_RETRY_COUNT: ${REPLICATION_RETRY_COUNT:-86400}
+    command:
+      - --server-id=${REPLICA_SERVER_ID:-2001}
+      - --relay-log=mysql-relay-bin
+      - --gtid-mode=ON
+      - --enforce-gtid-consistency=ON
+      - --read-only=ON
+      - --super-read-only=ON
+      - --skip-log-bin
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_0900_ai_ci
+      - --default-time-zone=${MYSQL_DEFAULT_TIME_ZONE:-+08:00}
+    ports:
+      - "${REPLICA_PORT:-3307}:3306"
+    volumes:
+      - mysql_replica_data:/var/lib/mysql
+      - ./mysql/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -uroot -p\"$${MYSQL_ROOT_PASSWORD}\" --silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+
+  mysql-backup:
+    build:
+      context: ./backup
+      args:
+        MYSQL_VERSION: ${MYSQL_VERSION:-8.0.45}
+    container_name: ${COMPOSE_PROJECT_NAME:-mysql-replica-backup}-mysql-backup
+    restart: unless-stopped
+    environment:
+      TZ: ${TZ:-Asia/Shanghai}
+      MYSQL_HOST: mysql-replica
+      MYSQL_PORT: 3306
+      MYSQL_USER: ${BACKUP_MYSQL_USER:-root}
+      MYSQL_PASSWORD: ${BACKUP_MYSQL_PASSWORD:-${REPLICA_ROOT_PASSWORD}}
+      BACKUP_DATABASES: ${BACKUP_DATABASES:-}
+      BACKUP_ALL_DATABASES: ${BACKUP_ALL_DATABASES:-1}
+      BACKUP_INTERVAL_SECONDS: ${BACKUP_INTERVAL_SECONDS:-86400}
+      BACKUP_RETENTION_COUNT: ${BACKUP_RETENTION_COUNT:-7}
+      BACKUP_DIR: /backups
+      BACKUP_PREFIX: ${BACKUP_PREFIX:-mysql-replica}
+      MYSQLDUMP_EXTRA_ARGS: ${MYSQLDUMP_EXTRA_ARGS:---single-transaction --quick --routines --triggers --events --hex-blob}
+      OSS_PROVIDER: ${OSS_PROVIDER:-aliyun}
+      OSS_ENDPOINT: ${OSS_ENDPOINT}
+      OSS_BUCKET: ${OSS_BUCKET}
+      OSS_ACCESS_KEY_ID: ${OSS_ACCESS_KEY_ID}
+      OSS_ACCESS_KEY_SECRET: ${OSS_ACCESS_KEY_SECRET}
+      OSS_PREFIX: ${OSS_PREFIX:-mysql-backups}
+      OSSUTIL_OPTIONS: ${OSSUTIL_OPTIONS:-}
+    volumes:
+      - mysql_backups:/backups
+    depends_on:
+      mysql-replica:
+        condition: service_healthy
+
+volumes:
+  mysql_replica_data:
+  mysql_backups:
