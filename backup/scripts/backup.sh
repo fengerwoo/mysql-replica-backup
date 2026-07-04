@@ -74,6 +74,18 @@ export AWS_SECRET_ACCESS_KEY="${S3_SECRET_ACCESS_KEY}"
 export AWS_DEFAULT_REGION="${s3_region}"
 export AWS_EC2_METADATA_DISABLED=true
 
+if [[ -n "${AWS_REQUEST_CHECKSUM_CALCULATION:-}" ]]; then
+  export AWS_REQUEST_CHECKSUM_CALCULATION
+elif [[ -n "${S3_ENDPOINT_URL:-}" ]]; then
+  export AWS_REQUEST_CHECKSUM_CALCULATION=when_required
+fi
+
+if [[ -n "${AWS_RESPONSE_CHECKSUM_VALIDATION:-}" ]]; then
+  export AWS_RESPONSE_CHECKSUM_VALIDATION
+elif [[ -n "${S3_ENDPOINT_URL:-}" ]]; then
+  export AWS_RESPONSE_CHECKSUM_VALIDATION=when_required
+fi
+
 if [[ -n "${S3_SESSION_TOKEN:-}" ]]; then
   export AWS_SESSION_TOKEN="${S3_SESSION_TOKEN}"
 fi

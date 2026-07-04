@@ -1,4 +1,4 @@
-# MySQL Replica Backup to S3-Compatible Object Storage
+# MySQL Replica Backup to S3
 
 <p align="center">
   <b><a href="#中文">[ 中文</a></b> | <b><a href="#english">English ]</a></b>
@@ -189,7 +189,9 @@ S3_BUCKET=your-bucket-name
 S3_ACCESS_KEY_ID=your-access-key-id
 S3_SECRET_ACCESS_KEY=your-access-key-secret
 S3_PREFIX=mysql-backups/prod
-S3_ADDRESSING_STYLE=auto
+S3_ADDRESSING_STYLE=virtual
+AWS_REQUEST_CHECKSUM_CALCULATION=when_required
+AWS_RESPONSE_CHECKSUM_VALIDATION=when_required
 ```
 
 #### 7. 选择启动方式
@@ -414,25 +416,12 @@ docker compose down
 | `S3_ACCESS_KEY_ID` / `S3_SECRET_ACCESS_KEY` | S3 凭证 |
 | `S3_REGION` | S3 区域；S3 兼容服务（如 OSS、COS、MinIO 等）不严格校验时可用 `us-east-1` |
 | `S3_PREFIX` | S3 备份路径前缀 |
-| `S3_ADDRESSING_STYLE` | Bucket 地址风格，默认 `auto`；MinIO 常用 `path` |
-
-### 从旧 OSS 配置迁移到 S3 配置
-
-如果你原来使用阿里云 OSS，`.env` 可以按下面迁移：
-
-| 旧配置 | 新配置 |
-|---|---|
-| `OSS_ENDPOINT=oss-cn-hangzhou.aliyuncs.com` | `S3_ENDPOINT_URL=https://oss-cn-hangzhou.aliyuncs.com` |
-| `OSS_BUCKET=your-bucket-name` | `S3_BUCKET=your-bucket-name` |
-| `OSS_ACCESS_KEY_ID=your-access-key-id` | `S3_ACCESS_KEY_ID=your-access-key-id` |
-| `OSS_ACCESS_KEY_SECRET=your-access-key-secret` | `S3_SECRET_ACCESS_KEY=your-access-key-secret` |
-| `OSS_PREFIX=mysql-backups/prod` | `S3_PREFIX=mysql-backups/prod` |
-
-阿里云 OSS 通过 S3 兼容接口接入时，`S3_REGION` 通常可以先填 `us-east-1`；如果你的环境强制校验 region，再按实际地域调整。`S3_PREFIX` 只写对象路径前缀，不要写成 `s3://bucket/...`。
+| `S3_ADDRESSING_STYLE` | Bucket 地址风格，默认 `auto`；OSS 常用 `virtual`，MinIO 常用 `path` |
+| `AWS_REQUEST_CHECKSUM_CALCULATION` / `AWS_RESPONSE_CHECKSUM_VALIDATION` | AWS CLI 校验策略；OSS 等兼容服务遇到 `STREAMING-UNSIGNED-PAYLOAD-TRAILER` 不支持时用 `when_required` |
 
 ### 已有部署更新后怎么生效
 
-拉取新代码后，先按上面的映射修改 `.env`，再重建并重启备份容器：
+拉取新代码后，更新 `.env` 配置，再重建并重启备份容器：
 
 ```bash
 git pull
@@ -611,7 +600,9 @@ S3_BUCKET=your-bucket-name
 S3_ACCESS_KEY_ID=your-access-key-id
 S3_SECRET_ACCESS_KEY=your-access-key-secret
 S3_PREFIX=mysql-backups/prod
-S3_ADDRESSING_STYLE=auto
+S3_ADDRESSING_STYLE=virtual
+AWS_REQUEST_CHECKSUM_CALCULATION=when_required
+AWS_RESPONSE_CHECKSUM_VALIDATION=when_required
 ```
 
 #### 7. Choose A Start Mode
@@ -792,23 +783,9 @@ docker compose down
 
 See [.env.example](.env.example) for all settings. It keeps conditional options such as `BACKUP_DATABASES`, binlog file/position, and AWS CLI extra options commented out until they are needed.
 
-### Migrating From Old OSS Variables
-
-If you previously used Alibaba Cloud OSS, migrate `.env` like this:
-
-| Old setting | New setting |
-|---|---|
-| `OSS_ENDPOINT=oss-cn-hangzhou.aliyuncs.com` | `S3_ENDPOINT_URL=https://oss-cn-hangzhou.aliyuncs.com` |
-| `OSS_BUCKET=your-bucket-name` | `S3_BUCKET=your-bucket-name` |
-| `OSS_ACCESS_KEY_ID=your-access-key-id` | `S3_ACCESS_KEY_ID=your-access-key-id` |
-| `OSS_ACCESS_KEY_SECRET=your-access-key-secret` | `S3_SECRET_ACCESS_KEY=your-access-key-secret` |
-| `OSS_PREFIX=mysql-backups/prod` | `S3_PREFIX=mysql-backups/prod` |
-
-When using Alibaba Cloud OSS through its S3-compatible API, start with `S3_REGION=us-east-1` unless your environment requires the real region. `S3_PREFIX` is only an object key prefix; do not include `s3://bucket/...`.
-
 ### Applying Changes To An Existing Deployment
 
-After pulling the new code, update `.env` with the mapping above, then rebuild and restart only the backup worker:
+After pulling the new code, update `.env`, then rebuild and restart only the backup worker:
 
 ```bash
 git pull
