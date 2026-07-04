@@ -205,6 +205,28 @@ docker compose up -d --build
 
 如果主库在高峰期，可以用限速方式慢慢导出：
 
+下面命令用到了 `pv` 做限速和进度显示。请先在执行导出的机器上确认已安装：
+
+```bash
+# macOS
+brew install pv
+
+# Debian / Ubuntu
+sudo apt-get update && sudo apt-get install -y pv
+
+# RHEL / CentOS / Rocky Linux / AlmaLinux
+sudo dnf install -y pv
+# 较旧 RHEL / CentOS（没有 dnf 时）
+sudo yum install -y pv
+
+# Alpine
+sudo apk add --no-cache pv
+```
+
+如果不想安装 `pv`，可以删掉 `| pv -W -L 20m` 这一段，直接管道到 `gzip`，但就不会限速。
+另外，`ionice` 是 Linux 工具；如果在 macOS 等环境执行，可以去掉 `ionice -c2 -n7`，只保留 `nice -n 19`。
+`pv -W` 会等到 `mysqldump` 真正输出数据后再显示进度，避免还没输入密码时先刷出 `0.00 B`。如果你的 `pv` 不支持 `-W`，去掉 `-W` 也能导出；看到 `Enter password:` 后直接输入密码回车即可，密码不会显示。
+
 ```bash
 nice -n 19 ionice -c2 -n7 \
 mysqldump \
@@ -220,7 +242,7 @@ mysqldump \
   --hex-blob \
   --set-gtid-purged=ON \
   --databases app_db app_db2 \
-  | pv -L 20m \
+  | pv -W -L 20m \
   | gzip -1 > initial_full.sql.gz
 ```
 
@@ -231,7 +253,7 @@ mysqldump \
 - `--single-transaction`：InnoDB 一致性快照，尽量不锁表；
 - `--quick`：边读边写，减少客户端内存；
 - `--set-gtid-purged=ON`：把 GTID 信息写入 dump，方便后续自动定位；
-- `pv -L 20m`：限制导出速度，可改成 `5m`、`10m`、`20m`；
+- `pv -W -L 20m`：等 `mysqldump` 开始输出后再显示进度，并限制导出速度，可改成 `5m`、`10m`、`20m`；
 - `gzip -1`：少用 CPU，高峰期不要用 `gzip -9`。
 
 注意：限速会降低瞬时压力，但导出时间会变长，`--single-transaction` 的快照也会持有更久。主库写入很忙时，过慢可能增加 undo/purge 压力。建议先小范围试跑，观察 CPU、IO、连接数和 `History list length`。
@@ -249,13 +271,47 @@ MASTER_AUTO_POSITION=1
 
 ```bash
 docker compose up -d --build mysql-replica
+for i in $(seq 1 60); do
+  if docker compose exec -T mysql-replica sh -c 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" mysql -uroot -e "SELECT 1" >/dev/null 2>&1'; then
+    echo "mysql root login ok"
+    break
+  fi
+  echo "waiting for mysql root login ($i/60)..."
+  sleep 5
+done
+docker compose exec -T mysql-replica sh -c 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" mysql -uroot -e "SELECT 1"'
 ```
 
 #### 4. 把全量 SQL 导入从库容器
 
 ```bash
-gunzip -c initial_full.sql.gz | docker compose exec -T mysql-replica sh -c 'mysql -uroot -p"$MYSQL_ROOT_PASSWORD"'
+ls -lh initial_full.sql.gz && \
+gunzip -t initial_full.sql.gz && \
+docker compose exec -T mysql-replica sh -c 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" mysql -uroot -e "SELECT 1"' && \
+gunzip -c initial_full.sql.gz | docker compose exec -T mysql-replica sh -c 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" mysql -uroot'
 ```
+
+如果提示 `initial_full.sql.gz: No such file or directory`，说明当前目录不是 dump 文件所在目录，或者文件名不一致。先在服务器上执行 `ls -lh initial_full.sql.gz` 确认文件存在。
+
+如果提示 `Access denied for user 'root'@'localhost'`，通常是 `mysql_replica_data` 这个 Docker 卷以前已经初始化过，MySQL 真实 root 密码还是旧值；修改 `.env` 里的 `REPLICA_ROOT_PASSWORD` 不会改已有数据目录里的密码。首次搭建且从库没有需要保留的数据时，可以删除从库卷后重新初始化：
+
+```bash
+docker compose down
+docker volume ls --format '{{.Name}}' | grep '_mysql_replica_data$'
+docker volume rm mysql-replica-backup_mysql_replica_data
+docker compose up -d --build mysql-replica
+```
+
+如果你改过 `.env` 里的 `COMPOSE_PROJECT_NAME`，卷名也会跟着变；以上一行 `grep` 输出的实际卷名为准。
+
+如果重建卷后仍然登录失败，先看初始化日志：
+
+```bash
+docker compose ps mysql-replica
+docker compose logs --tail=120 mysql-replica
+```
+
+如果日志里有 `ERROR 1290 ... --super-read-only ... cannot execute this statement`，说明用了旧配置在初始化阶段开启了 `super_read_only`。先移除 `docker-compose.yml` 里的 `--read-only=ON` 和 `--super-read-only=ON`，再删除从库卷重新初始化。
 
 #### 5. 导入完成后启动复制
 
@@ -264,6 +320,8 @@ GTID 方式直接执行：
 ```bash
 docker compose exec -e FORCE_REPLICA_START=1 mysql-replica bash /docker-entrypoint-initdb.d/01-replica-init.sh
 ```
+
+这个脚本会在复制配置完成后开启并持久化 `read_only` 和 `super_read_only`，所以首次导入前从库可以写入，复制启动后会恢复为只读从库。
 
 如果不用 GTID，而是用 binlog 文件和位点，先设置：
 
@@ -287,7 +345,7 @@ docker compose exec \
 #### 6. 检查复制状态
 
 ```bash
-docker compose exec mysql-replica sh -c 'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" -e "SHOW REPLICA STATUS\G"'
+docker compose exec mysql-replica sh -c 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" mysql -uroot -e "SHOW REPLICA STATUS\G"'
 ```
 
 重点看：
@@ -309,7 +367,7 @@ docker compose up -d --build mysql-backup
 查看复制状态：
 
 ```bash
-docker compose exec mysql-replica sh -c 'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" -e "SHOW REPLICA STATUS\G"'
+docker compose exec mysql-replica sh -c 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" mysql -uroot -e "SHOW REPLICA STATUS\G"'
 ```
 
 手动触发一次备份：
@@ -535,6 +593,28 @@ Do not start the full stack immediately. Use this flow:
 
 For mostly InnoDB tables:
 
+The command below uses `pv` for throttling and progress output. Install it on the machine that runs the export first:
+
+```bash
+# macOS
+brew install pv
+
+# Debian / Ubuntu
+sudo apt-get update && sudo apt-get install -y pv
+
+# RHEL / CentOS / Rocky Linux / AlmaLinux
+sudo dnf install -y pv
+# older RHEL / CentOS if dnf is unavailable
+sudo yum install -y pv
+
+# Alpine
+sudo apk add --no-cache pv
+```
+
+If you do not want to install `pv`, remove the `| pv -W -L 20m` stage and pipe directly to `gzip`; the export will not be throttled.
+Also, `ionice` is a Linux tool. On macOS and similar environments, remove `ionice -c2 -n7` and keep `nice -n 19`.
+`pv -W` waits until `mysqldump` emits real dump data before showing progress, so `pv` will not print `0.00 B` before the password is entered. If your `pv` does not support `-W`, remove `-W`; when you see `Enter password:`, type the password and press Enter. The password will not be displayed.
+
 ```bash
 nice -n 19 ionice -c2 -n7 \
 mysqldump \
@@ -550,7 +630,7 @@ mysqldump \
   --hex-blob \
   --set-gtid-purged=ON \
   --databases app_db app_db2 \
-  | pv -L 20m \
+  | pv -W -L 20m \
   | gzip -1 > initial_full.sql.gz
 ```
 
@@ -571,13 +651,47 @@ MASTER_AUTO_POSITION=1
 
 ```bash
 docker compose up -d --build mysql-replica
+for i in $(seq 1 60); do
+  if docker compose exec -T mysql-replica sh -c 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" mysql -uroot -e "SELECT 1" >/dev/null 2>&1'; then
+    echo "mysql root login ok"
+    break
+  fi
+  echo "waiting for mysql root login ($i/60)..."
+  sleep 5
+done
+docker compose exec -T mysql-replica sh -c 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" mysql -uroot -e "SELECT 1"'
 ```
 
 #### 4. Import The Full Dump
 
 ```bash
-gunzip -c initial_full.sql.gz | docker compose exec -T mysql-replica sh -c 'mysql -uroot -p"$MYSQL_ROOT_PASSWORD"'
+ls -lh initial_full.sql.gz && \
+gunzip -t initial_full.sql.gz && \
+docker compose exec -T mysql-replica sh -c 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" mysql -uroot -e "SELECT 1"' && \
+gunzip -c initial_full.sql.gz | docker compose exec -T mysql-replica sh -c 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" mysql -uroot'
 ```
+
+If `initial_full.sql.gz: No such file or directory` appears, the current directory does not contain the dump file, or the filename is different. Run `ls -lh initial_full.sql.gz` on the server first.
+
+If `Access denied for user 'root'@'localhost'` appears, the `mysql_replica_data` Docker volume was usually initialized earlier with a different root password. Changing `REPLICA_ROOT_PASSWORD` in `.env` does not change the password inside an existing MySQL data directory. For a first setup where the replica has no data to keep, recreate the replica volume:
+
+```bash
+docker compose down
+docker volume ls --format '{{.Name}}' | grep '_mysql_replica_data$'
+docker volume rm mysql-replica-backup_mysql_replica_data
+docker compose up -d --build mysql-replica
+```
+
+If you changed `COMPOSE_PROJECT_NAME` in `.env`, the volume name changes too. Use the actual volume name printed by the `grep` command above.
+
+If login still fails after recreating the volume, inspect the initialization logs:
+
+```bash
+docker compose ps mysql-replica
+docker compose logs --tail=120 mysql-replica
+```
+
+If the logs contain `ERROR 1290 ... --super-read-only ... cannot execute this statement`, an old configuration enabled `super_read_only` during MySQL initialization. Remove `--read-only=ON` and `--super-read-only=ON` from `docker-compose.yml`, then recreate the replica volume.
 
 #### 5. Start Replication
 
@@ -586,6 +700,8 @@ For GTID:
 ```bash
 docker compose exec -e FORCE_REPLICA_START=1 mysql-replica bash /docker-entrypoint-initdb.d/01-replica-init.sh
 ```
+
+The script enables and persists `read_only` and `super_read_only` after replication is configured. This keeps the replica writable for the initial import and read-only after replication starts.
 
 For binlog file/position replication, override the position:
 
@@ -601,7 +717,7 @@ docker compose exec \
 #### 6. Check Replication
 
 ```bash
-docker compose exec mysql-replica sh -c 'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" -e "SHOW REPLICA STATUS\G"'
+docker compose exec mysql-replica sh -c 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" mysql -uroot -e "SHOW REPLICA STATUS\G"'
 ```
 
 Look for:
@@ -621,7 +737,7 @@ docker compose up -d --build mysql-backup
 ### Common Commands
 
 ```bash
-docker compose exec mysql-replica sh -c 'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" -e "SHOW REPLICA STATUS\G"'
+docker compose exec mysql-replica sh -c 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" mysql -uroot -e "SHOW REPLICA STATUS\G"'
 docker compose exec mysql-backup backup.sh
 docker compose logs -f mysql-backup
 docker compose down

@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-mysql=(mysql -uroot -p"${MYSQL_ROOT_PASSWORD}" --protocol=socket)
+mysql=(mysql -uroot --protocol=socket)
 
 required_vars=(
+  MYSQL_ROOT_PASSWORD
   MASTER_HOST
   MASTER_USER
   MASTER_PASSWORD
@@ -73,7 +74,9 @@ fi
 
 echo "Configuring MySQL replica source ${MASTER_HOST}:${MASTER_PORT}"
 
-"${mysql[@]}" <<SQL
+MYSQL_PWD="${MYSQL_ROOT_PASSWORD}" "${mysql[@]}" <<SQL
+SET GLOBAL super_read_only = OFF;
+SET GLOBAL read_only = OFF;
 CHANGE REPLICATION SOURCE TO
   SOURCE_HOST = '${source_host}',
   SOURCE_PORT = ${MASTER_PORT},
@@ -84,6 +87,10 @@ CHANGE REPLICATION SOURCE TO
   GET_SOURCE_PUBLIC_KEY = 1,
   ${position_clause}${channel_clause};
 START REPLICA${start_channel_clause};
+SET PERSIST_ONLY read_only = ON;
+SET PERSIST_ONLY super_read_only = ON;
+SET GLOBAL read_only = ON;
+SET GLOBAL super_read_only = ON;
 SQL
 
 echo "Replica configuration applied."

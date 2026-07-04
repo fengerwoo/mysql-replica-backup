@@ -23,8 +23,6 @@ services:
       - --relay-log=mysql-relay-bin
       - --gtid-mode=ON
       - --enforce-gtid-consistency=ON
-      - --read-only=ON
-      - --super-read-only=ON
       - --skip-log-bin
       - --character-set-server=utf8mb4
       - --collation-server=utf8mb4_0900_ai_ci
@@ -35,7 +33,7 @@ services:
       - mysql_replica_data:/var/lib/mysql
       - ./mysql/init:/docker-entrypoint-initdb.d:ro
     healthcheck:
-      test: ["CMD-SHELL", "mysqladmin ping -uroot -p\"$${MYSQL_ROOT_PASSWORD}\" --silent"]
+      test: ["CMD-SHELL", "MYSQL_PWD=\"$${MYSQL_ROOT_PASSWORD}\" mysql -uroot -e 'SELECT 1' >/dev/null 2>&1"]
       interval: 10s
       timeout: 5s
       retries: 30
