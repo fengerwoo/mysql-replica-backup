@@ -175,6 +175,7 @@ MASTER_PASSWORD=change_me_repl_password
 
 REPLICA_SERVER_ID=2001
 REPLICA_ROOT_PASSWORD=change_me_replica_root_password
+REPLICA_BIND_ADDRESS=127.0.0.1
 REPLICA_PORT=3307
 
 BACKUP_ALL_DATABASES=1
@@ -193,6 +194,8 @@ S3_ADDRESSING_STYLE=virtual
 AWS_REQUEST_CHECKSUM_CALCULATION=when_required
 AWS_RESPONSE_CHECKSUM_VALIDATION=when_required
 ```
+
+`REPLICA_BIND_ADDRESS=127.0.0.1` 表示从库端口只在宿主机本机开放。备份容器不走这个宿主机端口，而是通过 Docker 内部网络访问 `mysql-replica:3306`。只有明确需要其他机器连接这个从库时，才改成受防火墙保护的内网 IP；不建议使用 `0.0.0.0`。
 
 #### 7. 选择启动方式
 
@@ -408,6 +411,7 @@ docker compose down
 | `MASTER_AUTO_POSITION` | `1` 使用 GTID；`0` 使用 binlog 文件和位点 |
 | `REPLICA_SERVER_ID` | 从库 server-id，不能与主库或其他从库重复 |
 | `REPLICA_ROOT_PASSWORD` | 从库 root 密码 |
+| `REPLICA_BIND_ADDRESS` / `REPLICA_PORT` | 从库暴露到宿主机的绑定地址和端口；默认 `127.0.0.1:3307`，仅宿主机本机可访问 |
 | `BACKUP_INTERVAL_SECONDS` | 备份间隔，单位秒 |
 | `BACKUP_RETENTION_COUNT` | 本地和 S3 保留最近 N 份 |
 | `BACKUP_ALL_DATABASES` | `1` 备份所有非系统库；`0` 按 `BACKUP_DATABASES` 指定 |
@@ -586,6 +590,7 @@ MASTER_PASSWORD=change_me_repl_password
 
 REPLICA_SERVER_ID=2001
 REPLICA_ROOT_PASSWORD=change_me_replica_root_password
+REPLICA_BIND_ADDRESS=127.0.0.1
 REPLICA_PORT=3307
 
 BACKUP_ALL_DATABASES=1
@@ -604,6 +609,8 @@ S3_ADDRESSING_STYLE=virtual
 AWS_REQUEST_CHECKSUM_CALCULATION=when_required
 AWS_RESPONSE_CHECKSUM_VALIDATION=when_required
 ```
+
+`REPLICA_BIND_ADDRESS=127.0.0.1` exposes the replica port on the host loopback interface only. The backup worker does not use this host-published port; it reaches the replica through the Docker internal network at `mysql-replica:3306`. Change it to a firewall-protected private IP only when another machine must connect to this replica; avoid `0.0.0.0`.
 
 #### 7. Choose A Start Mode
 
@@ -782,6 +789,8 @@ docker compose down
 ### Configuration
 
 See [.env.example](.env.example) for all settings. It keeps conditional options such as `BACKUP_DATABASES`, binlog file/position, and AWS CLI extra options commented out until they are needed.
+
+By default, the replica is published as `127.0.0.1:3307`, so it is reachable from the host only. Use `REPLICA_BIND_ADDRESS` and `REPLICA_PORT` if you need to change that binding.
 
 ### Applying Changes To An Existing Deployment
 
